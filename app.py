@@ -2,6 +2,7 @@ import os
 from flask import Flask, jsonify, request
 import pandas as pd
 from flask_cors import CORS
+import math
 
 app = Flask(__name__)
 CORS(app)  # This will allow all origins by default
@@ -10,10 +11,6 @@ CORS(app)  # This will allow all origins by default
 match_history = pd.read_csv('ipl_2024_matches.csv')
 ball_by_ball = pd.read_csv('ipl_2024_deliveries.csv')
 
-@app.route('/api/match-history', methods=['GET'])
-def get_match_history():
-    # Convert match history data to JSON format
-    return jsonify(match_history.to_dict(orient='records'))
 
 @app.route('/points-table', methods=['GET'])
 def points_table():
@@ -42,20 +39,6 @@ def points_table():
     sorted_points_table = dict(sorted(points_table.items(), key=lambda x: x[1], reverse=True))
     return jsonify(sorted_points_table)
 
-@app.route('/venues', methods=['GET'])
-def venues():
-    # Select only the required columns
-    selected_columns = match_history[['venue']]
-    # Convert to a list of dictionaries
-    result = selected_columns.to_dict(orient='records')
-
-    venues = []
-
-    for venue in result:
-        if venue not in venues:
-            venues.append(venue)
-
-    return jsonify(venues)
 
 @app.route('/matches', methods=['GET'])
 def matches():
@@ -151,6 +134,122 @@ def players():
 
     
     return jsonify(team_players)
+
+
+@app.route('/get-scorecard/<match_no>', methods=['GET'])
+def getScorecardFromMatchNo(match_no):
+    data= ball_by_ball[['match_no', 'date','venue', 'batting_team','bowling_team', 'innings', 'over', 'striker', 'non_striker', 'bowler', 'runs_of_bat', 'extras', 'wide', 'legbyes', 'byes', 'noballs', 'wicket_type', 'player_dismissed', 'fielder']]
+    result = data.to_dict(orient='records')
+
+    #Convert parameter from URL to integer
+    match_no = int(match_no)
+
+    #Get match detail from data
+    match_data = data[data['match_no'] == match_no]
+
+    innings_data = {1: {"batting":{}, "bowling": {}}, 2: {"batting":{}, "bowling":{}}}
+
+    for _,ball in match_data.iterrows():
+        innings = ball['innings']
+        batting_team = ball['batting_team']
+        bowling_team = ball['bowling_team']
+        striker = ball['striker']
+        non_striker = ball['non_striker']
+        bowler = ball['bowler']
+        fielder = ball['fielder']
+        player_dismissed = ball['player_dismissed']
+        wicket_type = ball['wicket_type']
+        runs_of_bat = ball['runs_of_bat']
+        extras = ball['extras']
+        wides = ball['wide']
+        no_balls = ball['noballs']
+        leg_byes = ball['legbyes']
+        byes = ball['byes']
+        over = ball['over']
+
+        if striker not in innings_data[innings]["batting"]:
+            innings_data[innings]["batting"][striker] = {
+                "batter": striker,
+                "runs": 0,
+                "balls": 0,
+                "fours": 0,
+                "sixes": 0,
+                "dots": 0,
+                "wicket_type": None,
+                "fielder": None,
+            }
+        
+        innings_data[innings]["batting"][striker]["runs"] += runs_of_bat
+        if no_balls != 1 and wides != 1:
+            innings_data[innings]["batting"][striker]["balls"] +=1
+
+        if runs_of_bat == 0:
+            innings_data[innings]["batting"][striker]["dots"] +=1
+        if runs_of_bat == 4:
+            innings_data[innings]["batting"][striker]["fours"] +=1
+        if runs_of_bat == 6:
+            innings_data[innings]["batting"][striker]["sixes"] +=1
+        
+        if not pd.isna(player_dismissed):
+            innings_data[innings]["batting"][player_dismissed]["wicket_type"] = (
+                wicket_type if not (isinstance(wicket_type, float) and math.isnan(wicket_type)) else "not out"
+            )
+            innings_data[innings]["batting"][player_dismissed]["fielder"] = (
+                fielder if not (isinstance(fielder, float) and math.isnan(fielder)) else ""
+            )
+            innings_data[innings]["batting"][player_dismissed]["bowler"] = (
+                bowler if not (isinstance(bowler, float) and math.isnan(bowler)) else ""
+            )
+
+        #Bowling Stats
+        if bowler not in innings_data[innings]["bowling"]:
+            innings_data[innings]["bowling"][bowler] = {
+                "bowler": bowler,
+                "runs": 0,
+                "overs": 0.0,
+                "maidens": 0,
+                "fours": 0,
+                "sixes": 0,
+                "wides": 0,
+                "no_balls": 0,
+                "dots" : 0,
+                "wickets" : 0,
+            }
+
+        innings_data[innings]["bowling"][bowler]["runs"] += runs_of_bat + extras - (leg_byes + byes)
+        innings_data[innings]["bowling"][bowler]["wides"] += wides
+        innings_data[innings]["bowling"][bowler]["no_balls"] += no_balls
+
+        if runs_of_bat == 0 and extras == 0:
+            innings_data[innings]["bowling"][bowler]["dots"] += 1
+        if runs_of_bat == 4:
+            innings_data[innings]["bowling"][bowler]["fours"] += 1
+        if runs_of_bat == 6:
+            innings_data[innings]["bowling"][bowler]["sixes"] += 1
+
+        # Calculate overs bowled
+        if no_balls != 1 and wides != 1:
+            current_overs = innings_data[innings]["bowling"][bowler]["overs"]
+            balls_bowled = math.floor(current_overs) * 6 + (current_overs - math.floor(current_overs)) * 10
+            balls_bowled += 1
+            innings_data[innings]["bowling"][bowler]["overs"] = math.floor(balls_bowled / 6) + (balls_bowled % 6) / 10
+        
+        # Get Wickets
+        if wicket_type == "caught" or wicket_type == "bowled":
+            innings_data[innings]["bowling"][bowler]["wickets"] += 1
+
+     # Convert to list for JSON response
+    response = {
+        "innings1": {
+            "batting": list(innings_data[1]["batting"].values()),
+            "bowling": list(innings_data[1]["bowling"].values()),
+        },
+        "innings2": {
+            "batting": list(innings_data[2]["batting"].values()),
+            "bowling": list(innings_data[2]["bowling"].values()),
+        },
+    }
+    return jsonify(response)
 
 if __name__ == '__main__':
     # Get the port from the environment variable, default to 5000 if not set
