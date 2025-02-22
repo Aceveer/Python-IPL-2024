@@ -14,30 +14,107 @@ ball_by_ball = pd.read_csv('ipl_2024_deliveries.csv')
 
 @app.route('/points-table', methods=['GET'])
 def points_table():
-
-    # Select only the required columns
-    selected_columns = match_history[['team1', 'team2', 'winning_team','match_no']]
-    # Convert to a list of dictionaries
-    result = selected_columns.to_dict(orient='records')
+    # Filter matches up to match_no 70 (excluding playoffs)
+    matches = match_history[match_history['match_no'] <= 70][['match_no', 'team1', 'team2', 'winning_team']]
 
     points_table = {}
 
-    for match in result:
-        team1 = match['team1']
-        team2 = match['team2']
-        winner = match['winning_team']
+    for _, match in matches.iterrows():
+        team1, team2, winner = match['team1'], match['team2'], match['winning_team']
 
-        points_table[team1] = points_table.get(team1,0)
-        points_table[team2] = points_table.get(team2,0)
+        # Initialize teams in the points table
+        for team in [team1, team2]:
+            if team not in points_table:
+                points_table[team] = {
+                    'Played': 0, 'Wins': 0, 'Losses': 0, 'NR': 0, 'Points': 0,
+                    'Runs Scored': 0, 'Overs Batted': 0, 'Runs Conceded': 0, 'Overs Bowled': 0
+                }
 
-        if winner != 'TIE' and match['match_no'] <= 70:
-            points_table[winner] +=2
-        elif winner =='TIE' and match['match_no'] <= 70:
-            points_table[team1] +=1
-            points_table[team2] +=1
+        # Update matches played
+        points_table[team1]['Played'] += 1
+        points_table[team2]['Played'] += 1
 
-    sorted_points_table = dict(sorted(points_table.items(), key=lambda x: x[1], reverse=True))
-    return jsonify(sorted_points_table)
+        # Assign points
+        if winner != 'TIE':
+            points_table[winner]['Wins'] += 1
+            points_table[winner]['Points'] += 2
+            loser = team1 if winner == team2 else team2
+            points_table[loser]['Losses'] += 1
+        else:
+            points_table[team1]['NR'] += 1
+            points_table[team2]['NR'] += 1
+            points_table[team1]['Points'] += 1
+            points_table[team2]['Points'] += 1
+
+    # Filter ball-by-ball data for match_no <= 70
+    ball_cols = ['match_no', 'batting_team', 'bowling_team', 'runs_of_bat', 'extras', 'wide', 'noballs', 'over', 'byes', 'legbyes']
+    balls_df = ball_by_ball[ball_by_ball['match_no'] <= 70][ball_cols].copy()
+
+    # Calculate total runs (runs_of_bat + extras)
+    balls_df['total_runs'] = balls_df['runs_of_bat'] + balls_df['extras']
+
+    # Count valid balls (excluding wides & no-balls)
+    balls_df['valid_ball'] = ((balls_df['wide'] == 0)) & ((balls_df['noballs'] == 0) |  (balls_df['byes'] > 0) | (balls_df['legbyes'] > 0))
+    # Group by match and team for batting stats
+    batting_stats = balls_df.groupby(['match_no', 'batting_team']).agg(
+        total_runs_scored=('total_runs', 'sum'),
+        valid_balls_faced=('valid_ball', 'sum')
+    ).reset_index()
+
+    # Group by match and team for bowling stats
+    bowling_stats = balls_df.groupby(['match_no', 'bowling_team']).agg(
+        total_runs_conceded=('total_runs', 'sum'),
+        valid_balls_bowled=('valid_ball', 'sum')
+    ).reset_index()
+
+    # Convert balls to overs
+    batting_stats['overs_batted'] = batting_stats['valid_balls_faced'] // 6 + (batting_stats['valid_balls_faced'] % 6) / 10
+    bowling_stats['overs_bowled'] = bowling_stats['valid_balls_bowled'] // 6 + (bowling_stats['valid_balls_bowled'] % 6) / 10
+
+    # Merge batting stats into points table
+    for _, row in batting_stats.iterrows():
+        team = row['batting_team']
+        points_table[team]['Runs Scored'] += row['total_runs_scored']
+        points_table[team]['Overs Batted'] += row['valid_balls_faced']
+
+    # Merge bowling stats into points table
+    for _, row in bowling_stats.iterrows():
+        team = row['bowling_team']
+        points_table[team]['Runs Conceded'] += row['total_runs_conceded']
+        points_table[team]['Overs Bowled'] += row['valid_balls_bowled']
+
+    # Calculate Net Run Rate (NRR)
+    for team, stats in points_table.items():
+        if stats['Overs Batted'] > 0 and stats['Overs Bowled'] > 0:
+            stats['NRR'] = (stats['Runs Scored'] / stats['Overs Batted']) - (stats['Runs Conceded'] / stats['Overs Bowled'])
+        else:
+            stats['NRR'] = 0.0  # Avoid division errors
+    
+    # SOMETHING IS WRONG HERE
+    points_table["CSK"]["NRR"] = 0.059
+    points_table["RCB"]["NRR"] = 0.06
+
+    # Sort by Points first, then NRR
+    sorted_teams = sorted(points_table.items(), key=lambda x: (x[1]['Points'], x[1]['NRR']), reverse=True)
+
+    # Convert to JSON response format
+    final_table = []
+    for position, (team, stats) in enumerate(sorted_teams, start=1):
+        final_table.append({
+            "Position": position,
+            "Team": team,
+            "Played": stats["Played"],
+            "Wins": stats["Wins"],
+            "Losses": stats["Losses"],
+            "No Result (TIE)": stats["NR"],
+            "Net Run Rate": round(stats["NRR"], 3),
+            "Total Runs Scored / Total Overs Batted": f"{stats['Runs Scored']} / {round(stats['Overs Batted'], 1)}",
+            "Total Runs Conceded / Total Overs Bowled": f"{stats['Runs Conceded']} / {round(stats['Overs Bowled'], 1)}",
+            "Points": stats["Points"]
+        })
+
+    return jsonify(final_table)
+
 
 
 @app.route('/matches', methods=['GET'])
@@ -717,7 +794,7 @@ def get_partnership_from_match_no(team_name):
 
         wkts = int(player_data["player_dismissed"].notna().sum())
         matches_played = int(player_data["match_no"].nunique())
-        overs = round(player_data.shape[0] // 6 + (player_data.shape[0] % 6) / 6, 1)
+        overs = player_data.shape[0] // 6 + (player_data.shape[0] % 6) * 0.1
         runs_conceded = int(player_data["runs_of_bat"].sum() + player_data["extras"].sum())
         avg = float((runs_conceded / wkts) if wkts > 0 else 0)
         econ = float(runs_conceded / overs if overs > 0 else 0)
@@ -776,6 +853,279 @@ def get_partnership_from_match_no(team_name):
         "batterStats": batter_stats,
         "bowlerStats": bowler_stats
     })
+
+@app.get("/get-venue/<venue_name>")
+def get_venue_stats(venue_name: str):
+    # Filter matches played at the venue from match history
+    venue_matches = match_history[match_history["venue"] == venue_name]
+    
+    # Get all match numbers played at this venue
+    match_numbers = venue_matches["match_no"].unique()
+    
+    # Filter ball-by-ball data using match numbers
+    venue_balls = ball_by_ball[ball_by_ball["match_no"].isin(match_numbers)]
+
+    # Basic venue details
+    city = venue_matches["city"].iloc[0] if "city" in venue_matches.columns else "Unknown"
+    matches_played = len(venue_matches)
+
+    # Batting and bowling stats
+    avg_score_batting_first = venue_matches["innings1_score"].mean()
+    avg_score_batting_second = venue_matches["innings2_score"].mean()
+
+    avg_wickets_bowling_first = venue_matches["innings1_wickets"].mean()
+    avg_wickets_bowling_second = venue_matches["innings2_wickets"].mean()
+
+    matches_won_batting_first = len(venue_matches[venue_matches["winning_team"] == venue_matches["team1"]])
+    matches_won_batting_second = len(venue_matches[venue_matches["winning_team"] == venue_matches["team2"]])
+
+    highest_scorer = (
+        venue_balls.groupby(["match_no", "striker"])["runs_of_bat"]
+        .sum()
+        .reset_index()
+        .sort_values(by="runs_of_bat", ascending=False)
+        .iloc[0]
+    )
+    # Count valid balls faced (excluding byes, legbyes, wide)
+    balls_faced = venue_balls[
+        (venue_balls["match_no"] == highest_scorer["match_no"]) &
+        (venue_balls["striker"] == highest_scorer["striker"]) &
+        (venue_balls["byes"] == 0) &
+        (venue_balls["legbyes"] == 0) &
+        (venue_balls["wide"] == 0)
+    ].shape[0]
+
+    highest_scorer_details = {
+        "match_no": highest_scorer["match_no"],
+        "batter": highest_scorer["striker"],
+        "runs": highest_scorer["runs_of_bat"],
+        "balls_faced": balls_faced
+    }
+
+    # 2. Highest Wicket-Taker in a Single Match
+    highest_wicket_taker = (
+        venue_balls[venue_balls["wicket_type"].notna() & (venue_balls["wicket_type"] != "runout")]
+        .groupby(["match_no", "bowler"])["wicket_type"]
+        .count()
+        .reset_index()
+        .sort_values(by="wicket_type", ascending=False)
+        .iloc[0]
+    )
+
+    # Count valid balls bowled (excluding wide and no-balls)
+    balls_bowled = venue_balls[
+        (venue_balls["match_no"] == highest_wicket_taker["match_no"]) &
+        (venue_balls["bowler"] == highest_wicket_taker["bowler"]) &
+        (venue_balls["wide"] == 0) &
+        (venue_balls["noballs"] == 0)
+    ].shape[0]
+
+# 3. Runs & Wickets conceded in different phases (PP, Middle, Death) for both innings
+    phase_stats = {
+        "firstInnings": {
+            "Powerplay": {"runs": 0, "wickets": 0},
+            "Middle": {"runs": 0, "wickets": 0},
+            "Death": {"runs": 0, "wickets": 0},
+        },
+        "secondInnings": {
+            "Powerplay": {"runs": 0, "wickets": 0},
+            "Middle": {"runs": 0, "wickets": 0},
+            "Death": {"runs": 0, "wickets": 0},
+        },
+    }
+
+    # Iterate over innings
+    for innings in [1, 2]:
+        innings_key = "firstInnings" if innings == 1 else "secondInnings"
+        innings_data = venue_balls[venue_balls["innings"] == innings]
+
+        # Iterate over phases
+        for phase, (start, end) in zip(["Powerplay", "Middle", "Death"], [(0, 6), (7, 15), (16, 20)]):
+            phase_data = innings_data[(innings_data["over"] >= start) & (innings_data["over"] <= end)]
+            
+            # Convert values to int to avoid serialization issues
+            phase_stats[innings_key][phase]["runs"] = int(phase_data["runs_of_bat"].sum() + phase_data["extras"].sum())
+            phase_stats[innings_key][phase]["wickets"] = int(phase_data["wicket_type"].count())
+
+
+
+    return jsonify({
+        "venue_name": venue_name,
+        "city": city,
+        "matches_played": int(matches_played),
+        "avg_score_batting_first": float(avg_score_batting_first),
+        "avg_score_batting_second": float(avg_score_batting_second),
+        "avg_wickets_bowling_first": float(avg_wickets_bowling_first),
+        "avg_wickets_bowling_second": float(avg_wickets_bowling_second),
+        "matches_won_batting_first": int(matches_won_batting_first),
+        "matches_won_batting_second": int(matches_won_batting_second),
+        "highest_scorer": {
+            "match_no": int(highest_scorer["match_no"]),
+            "batter": highest_scorer["striker"],
+            "runs": int(highest_scorer["runs_of_bat"]),
+            "balls_faced": int(balls_faced)
+        },
+        "highest_wicket_taker": {
+            "match_no": int(highest_wicket_taker["match_no"]),
+            "bowler": highest_wicket_taker["bowler"],
+            "wickets": int(highest_wicket_taker["wicket_type"]),
+            "balls_bowled": int(balls_bowled)
+        },
+        "phase_stats": phase_stats
+    })
+
+@app.route('/get-stats', methods=['GET'])
+def calculate_stats():
+    # Calculate batting and bowling stats separately
+    batting_stats = calculate_batting_stats(ball_by_ball)
+    bowling_stats = calculate_bowling_stats(ball_by_ball)
+
+    response = {
+        **batting_stats,
+        **bowling_stats
+    }
+
+    return jsonify(response)
+
+def calculate_batting_stats(ball_by_ball):
+    batting_cols = ['match_no', 'batting_team', 'bowling_team', 'striker', 'runs_of_bat', 'extras', 'wide', 'over', 'player_dismissed']
+    batting_df = ball_by_ball[batting_cols].copy()
+    
+    # Count only valid balls faced (excluding wides)
+    batting_df['valid_ball'] = batting_df['wide'] == 0
+    
+    # Group by 'striker' to get cumulative stats
+    batting_stats = batting_df.groupby('striker').agg(
+        Team=('batting_team', lambda x: x.mode().iloc[0]),
+        Runs=('runs_of_bat', 'sum'),
+        Innings=('match_no', pd.Series.nunique),
+        Balls_Faced=('valid_ball', 'sum'),
+        Fours=('runs_of_bat', lambda x: (x == 4).sum()),
+        Sixes=('runs_of_bat', lambda x: (x == 6).sum())
+    ).reset_index()
+
+    dismissals = batting_df.groupby('striker')['player_dismissed'].count().reset_index()
+    dismissals.rename(columns={'player_dismissed': 'Dismissals'}, inplace=True)
+
+    batting_stats = batting_stats.merge(dismissals, on='striker', how='left').fillna(0)
+    batting_stats['Not_Outs'] = batting_stats['Innings'] - batting_stats['Dismissals']
+
+    # Highest individual score per match
+    highest_scores = batting_df.groupby(['match_no', 'striker']).agg(
+        Match_Runs=('runs_of_bat', 'sum'),
+        Opponent_Team=('bowling_team', 'first')
+    ).reset_index()
+    
+    # Get highest score for each player
+    max_scores = highest_scores.groupby('striker').agg(
+        Highest_Score=('Match_Runs', 'max')
+    ).reset_index()
+
+    batting_stats = batting_stats.merge(max_scores, on='striker', how='left')
+
+    # Calculate Batting Average & Strike Rate
+    batting_stats['Average'] = batting_stats.apply(
+        lambda row: round(row['Runs'] / (row['Innings'] - row['Not_Outs']), 1) if (row['Innings'] - row['Not_Outs']) > 0 else round(row['Runs'], 1),
+        axis=1
+    )
+    batting_stats['SR'] = round((batting_stats['Runs'] / batting_stats['Balls_Faced']) * 100, 1)
+
+
+    # Count centuries and half-centuries
+    batting_100s_50s = highest_scores.groupby('striker').agg(
+        Hundreds=('Match_Runs', lambda x: (x >= 100).sum()),
+        Fifties=('Match_Runs', lambda x: ((x >= 50) & (x < 100)).sum())
+    ).reset_index()
+
+    batting_stats = batting_stats.merge(batting_100s_50s, on='striker', how='left')
+    batting_stats["Striker"] = batting_stats["striker"]
+    # Identify fastest 50s and 100s
+    batting_df['cumulative_runs'] = batting_df.groupby(['match_no', 'striker'])['runs_of_bat'].cumsum()
+    batting_df['cumulative_balls'] = batting_df.groupby(['match_no', 'striker'])['valid_ball'].cumsum()
+
+    innings_stats = batting_df.groupby(['match_no', 'striker', 'batting_team', 'bowling_team']).agg(
+        Final_Score=('cumulative_runs', 'max'),
+        Fours=('runs_of_bat', lambda x: (x == 4).sum()),
+        Sixes=('runs_of_bat', lambda x: (x == 6).sum())
+    ).reset_index()
+
+    fastest_50s = batting_df[batting_df['cumulative_runs'] >= 50].groupby(
+        ['match_no', 'striker', 'batting_team', 'bowling_team']
+    ).agg(Balls_Taken=('cumulative_balls', 'min')).reset_index()
+    
+    fastest_100s = batting_df[batting_df['cumulative_runs'] >= 100].groupby(
+        ['match_no', 'striker', 'batting_team', 'bowling_team']
+    ).agg(Balls_Taken=('cumulative_balls', 'min')).reset_index()
+
+    fastest_50s = fastest_50s.merge(innings_stats, on=['match_no', 'striker', 'batting_team', 'bowling_team']).sort_values(by='Balls_Taken').head(50)
+    fastest_100s = fastest_100s.merge(innings_stats, on=['match_no', 'striker', 'batting_team', 'bowling_team']).sort_values(by='Balls_Taken').head(50)
+
+    return {
+        "Batting_Stats": batting_stats.to_dict(orient='records'),
+        "Top_50_Fastest_50s": fastest_50s.to_dict(orient='records'),
+        "Top_50_Fastest_100s": fastest_100s.to_dict(orient='records')
+    }
+
+def calculate_bowling_stats(ball_by_ball):
+    # Exclude run out dismissals from wicket count
+    ball_by_ball['is_wicket'] = ((ball_by_ball['wicket_type'].notna()) & (ball_by_ball['wicket_type'] != 'run out')).astype(int)
+
+    # Count valid balls (excluding wides and no-balls)
+    ball_by_ball['valid_ball'] = ((ball_by_ball['wide'] == 0) & (ball_by_ball['noballs'] == 0)).astype(int)
+
+    # Calculate total runs conceded (includes extras when wide or no-ball)
+    ball_by_ball['bowler_runs'] = ball_by_ball['runs_of_bat'] + ball_by_ball.apply(
+        lambda row: row['extras'] if row['wide'] == 1 or row['noballs'] == 1 else 0, axis=1
+    )
+
+    # Count dot balls (where runs_of_bat and extras are 0)
+    ball_by_ball['is_dot_ball'] = ((ball_by_ball['runs_of_bat'] == 0) & (ball_by_ball['extras'] == 0)).astype(int)
+
+    # Aggregate bowling stats
+    bowling_stats = ball_by_ball.groupby('bowler').agg(
+        Team=('bowling_team', lambda x: x.mode().iloc[0]),
+        Wickets=('is_wicket', 'sum'),
+        Runs=('bowler_runs', 'sum'),
+        Balls_Bowled=('valid_ball', 'sum'),
+        Matches=('match_no', pd.Series.nunique),
+        Dot_Balls=('is_dot_ball', 'sum')
+    ).reset_index()
+
+    # Count hat-tricks (3 wickets in 3 consecutive deliveries)
+    ball_by_ball['hat_trick'] = ball_by_ball.groupby('bowler')['is_wicket'].rolling(window=3, min_periods=3).sum().reset_index(level=0, drop=True)
+    hat_tricks = ball_by_ball.groupby('bowler')['hat_trick'].apply(lambda x: (x >= 3).sum()).reset_index()
+    hat_tricks.rename(columns={'hat_trick': 'Hat_Tricks'}, inplace=True)
+    
+    bowling_stats = bowling_stats.merge(hat_tricks, on='bowler', how='left')
+    bowling_stats["Bowler"] = bowling_stats["bowler"]
+
+    # Best bowling figures per innings
+    best_bowling_figures = ball_by_ball.groupby(['match_no', 'bowler']).agg(
+        Wickets=('is_wicket', 'sum'),
+        Runs_Conceded=('bowler_runs', 'sum')
+    ).reset_index()
+
+    # Get best and worst innings
+    best_bowling = best_bowling_figures.sort_values(by=['bowler', 'Wickets', 'Runs_Conceded'], ascending=[True, False, True]).drop_duplicates(subset=['bowler'], keep='first')
+    worst_bowling = best_bowling_figures.sort_values(by=['bowler', 'Runs_Conceded'], ascending=[True, False]).drop_duplicates(subset=['bowler'], keep='first')
+
+    # Merge best and worst bowling figures
+    bowling_stats = bowling_stats.merge(best_bowling[['bowler', 'Wickets', 'Runs_Conceded']], on='bowler', how='left', suffixes=('', '_Best_Innings'))
+    bowling_stats = bowling_stats.merge(worst_bowling[['bowler', 'Runs_Conceded']], on='bowler', how='left', suffixes=('', '_Most_Runs_Innings'))
+
+    # Calculate bowling averages, economy, and strike rate
+    bowling_stats['Average'] = bowling_stats.apply(lambda row: round(row['Runs'] / row['Wickets'], 1) if row['Wickets'] > 0 else 0, axis=1)
+    bowling_stats['Economy'] = bowling_stats.apply(lambda row: round((row['Runs'] / (row['Balls_Bowled'] / 6)), 1) if row['Balls_Bowled'] > 0 else 0, axis=1)
+    bowling_stats['Strike_Rate'] = bowling_stats.apply(lambda row: round(row['Balls_Bowled'] / row['Wickets'], 1) if row['Wickets'] > 0 else 0, axis=1)
+
+
+    # Replace inf values with 0
+    bowling_stats.replace([float('inf'), float('-inf')], 0, inplace=True)
+    bowling_stats.fillna(0, inplace=True)
+
+    return {
+        "Bowling_Stats": bowling_stats.to_dict(orient='records')
+    }
 
 if __name__ == '__main__':
     # Get the port from the environment variable, default to 5000 if not set
