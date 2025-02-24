@@ -216,7 +216,7 @@ def players():
 @app.route('/get-scorecard/<match_no>', methods=['GET'])
 def getScorecardFromMatchNo(match_no):
     data= ball_by_ball[['match_no', 'date','venue', 'batting_team','bowling_team', 'innings', 'over', 'striker', 'non_striker', 'bowler', 'runs_of_bat', 'extras', 'wide', 'legbyes', 'byes', 'noballs', 'wicket_type', 'player_dismissed', 'fielder']]
-    match = match_history[ ['match_no', 'team1', 'team2', 'innings1_score','innings2_score', 'innings1_wickets','innings2_wickets']]
+    match = match_history[ ['match_no', 'team1', 'team2', 'innings1_score','innings2_score', 'innings1_wickets','innings2_wickets', 'venue','date','won_by','margin','winning_team']]
 
     #Convert parameter from URL to integer
     match_no = int(match_no)
@@ -349,18 +349,27 @@ def getScorecardFromMatchNo(match_no):
             "team" : general_match_info["team2"],
             "extras" : innings_data[2]["extras"]
         },
+        "header": {
+            "matchNo" : match_no,
+            "venue" : general_match_info["venue"],
+            "date" : general_match_info["date"],
+            "winning_team" : general_match_info["winning_team"],
+            "margin" : general_match_info["margin"],
+            "won_by" : general_match_info["won_by"],
+        }
     }
     return jsonify(response)
 
 @app.route('/get-fow/<match_no>', methods=['GET'])
 def getFallOfWicketsFromMatchNo(match_no):
     data = ball_by_ball[['match_no', 'batting_team', 'bowling_team', 'innings', 'over', 'runs_of_bat', 'extras', 'player_dismissed']]
-
+    match = match_history[ ['match_no', 'team1', 'team2', 'innings1_score','innings2_score', 'innings1_wickets','innings2_wickets', 'venue','date','won_by','margin','winning_team']]
     # Convert parameter from URL to integer
     match_no = int(match_no)
 
     # Get match detail from data
     match_data = data[data['match_no'] == match_no]
+    general_match_info = match[match['match_no'] == match_no].iloc[0]
 
     ball_by_ball_runs = {1: [], 2: []}
     fall_of_wickets = {1: [], 2: []}
@@ -438,6 +447,14 @@ def getFallOfWicketsFromMatchNo(match_no):
          "teams": {
             "innings1": [{"batting": team[1]["batting_team"], "bowling": team[1]["bowling_team"]}],
             "innings2": [{"batting": team[2]["batting_team"], "bowling": team[2]["bowling_team"]}],
+        },
+        "header": {
+            "matchNo" : match_no,
+            "venue" : general_match_info["venue"],
+            "date" : general_match_info["date"],
+            "winning_team" : general_match_info["winning_team"],
+            "margin" : general_match_info["margin"],
+            "won_by" : general_match_info["won_by"],
         }
     }
 
@@ -446,12 +463,14 @@ def getFallOfWicketsFromMatchNo(match_no):
 @app.route('/get-overs/<match_no>',methods=['GET'])
 def getOverAnalysisFromMatchNo(match_no):
     data = ball_by_ball[['match_no', 'batting_team', 'bowling_team', 'innings', 'over', 'runs_of_bat', 'extras', 'player_dismissed', "striker", "bowler", "wide", "noballs","byes","legbyes", "wicket_type"]]
+    match = match_history[ ['match_no', 'team1', 'team2', 'innings1_score','innings2_score', 'innings1_wickets','innings2_wickets', 'venue','date','won_by','margin','winning_team']]
 
     # Convert match_no parameter from URL to integer
     match_no = int(match_no)
 
     # Filter data for the specific match
     filtered_data = data[data['match_no'] == match_no]
+    general_match_info = match[match['match_no'] == match_no].iloc[0]
 
     # Convert the filtered DataFrame to a dictionary
     result = filtered_data.to_dict(orient='records')
@@ -568,6 +587,14 @@ def getOverAnalysisFromMatchNo(match_no):
         "topPerformers": {
             "innings1": top_performers[1],
             "innings2": top_performers[2]
+        },
+        "header": {
+            "matchNo" : match_no,
+            "venue" : general_match_info["venue"],
+            "date" : general_match_info["date"],
+            "winning_team" : general_match_info["winning_team"],
+            "margin" : general_match_info["margin"],
+            "won_by" : general_match_info["won_by"],
         }
     }
 
@@ -599,9 +626,11 @@ def get_top_bowler(bowling_data):
 @app.route('/get-partnerships/<match_no>',methods=['GET'])
 def getPartnershipFromMatchNo(match_no):
     data = ball_by_ball[['match_no', 'batting_team', 'bowling_team', 'innings', 'over', 'runs_of_bat', 'extras', 'player_dismissed', 'striker', 'non_striker', 'wide', 'noballs']]
-    
+    match = match_history[ ['match_no', 'team1', 'team2', 'innings1_score','innings2_score', 'innings1_wickets','innings2_wickets', 'venue','date','won_by','margin','winning_team']]
+
     match_no = int(match_no)
     filtered_data = data[data['match_no'] == match_no]
+    general_match_info = match[match['match_no'] == match_no].iloc[0]
     result = filtered_data.to_dict(orient='records')
 
     partnerships = {1: [], 2: []}  # Store partnerships for both innings
@@ -695,7 +724,15 @@ def getPartnershipFromMatchNo(match_no):
     response = {
         "partnership": partnerships,
         "innings1batting": innings1batting,
-        "innings2batting" : innings2batting
+        "innings2batting" : innings2batting,
+        "header": {
+            "matchNo" : match_no,
+            "venue" : general_match_info["venue"],
+            "date" : general_match_info["date"],
+            "winning_team" : general_match_info["winning_team"],
+            "margin" : general_match_info["margin"],
+            "won_by" : general_match_info["won_by"],
+        }
     }
     return jsonify(response)
 
